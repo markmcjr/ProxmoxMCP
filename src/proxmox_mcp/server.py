@@ -8,21 +8,22 @@ This module implements the core MCP server for Proxmox integration, providing:
 - MCP tool registration and routing
 - Signal handling for graceful shutdown
 
-The server exposes a set of tools for managing Proxmox resources including:
+The server exposes a set of read-only tools for managing Proxmox resources:
 - Node management
-- VM operations
+- VM listing
 - Storage management
 - Cluster status monitoring
+
+SECURITY: execute_vm_command has been intentionally removed to prevent
+arbitrary command execution via the MCP interface.
 """
-import logging
 import os
+import re
 import sys
 import signal
-from typing import Optional, List, Annotated
+from typing import Optional, Annotated
 
 from mcp.server.fastmcp import FastMCP
-from mcp.server.fastmcp.tools import Tool
-from mcp.types import TextContent as Content
 from pydantic import Field
 
 from .config.loader import load_config
@@ -36,11 +37,28 @@ from .tools.definitions import (
     GET_NODES_DESC,
     GET_NODE_STATUS_DESC,
     GET_VMS_DESC,
-    EXECUTE_VM_COMMAND_DESC,
     GET_CONTAINERS_DESC,
     GET_STORAGE_DESC,
     GET_CLUSTER_STATUS_DESC
 )
+
+# Input validation patterns
+_NODE_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$")
+_VMID_RE = re.compile(r"^[1-9][0-9]{0,8}$")
+
+
+def _validate_node(node: str) -> str:
+    """Validate and return a node name (alphanumeric, dots, hyphens, underscores; max 64 chars)."""
+    if not _NODE_RE.match(node):
+        raise ValueError(f"Invalid node name: {node!r}")
+    return node
+
+
+def _validate_vmid(vmid: str) -> str:
+    """Validate and return a VM ID (positive integer string, max 9 digits)."""
+    if not _VMID_RE.match(vmid):
+        raise ValueError(f"Invalid VM ID: {vmid!r}")
+    return vmid
 
 class ProxmoxMCPServer:
     """Main server class for Proxmox MCP."""
@@ -90,20 +108,15 @@ class ProxmoxMCPServer:
         def get_node_status(
             node: Annotated[str, Field(description="Name/ID of node to query (e.g. 'pve1', 'proxmox-node2')")]
         ):
-            return self.node_tools.get_node_status(node)
+            return self.node_tools.get_node_status(_validate_node(node))
 
         # VM tools
         @self.mcp.tool(description=GET_VMS_DESC)
         def get_vms():
             return self.vm_tools.get_vms()
 
-        @self.mcp.tool(description=EXECUTE_VM_COMMAND_DESC)
-        async def execute_vm_command(
-            node: Annotated[str, Field(description="Host node name (e.g. 'pve1', 'proxmox-node2')")],
-            vmid: Annotated[str, Field(description="VM ID number (e.g. '100', '101')")],
-            command: Annotated[str, Field(description="Shell command to run (e.g. 'uname -a', 'systemctl status nginx')")]
-        ):
-            return await self.vm_tools.execute_command(node, vmid, command)
+        # SECURITY: execute_vm_command intentionally removed - arbitrary command execution risk
+        # The console code remains in tools/console/ but is not registered as an MCP tool
 
         # Storage tools
         @self.mcp.tool(description=GET_STORAGE_DESC)
@@ -143,17 +156,5 @@ class ProxmoxMCPServer:
             sys.exit(1)
 
 if __name__ == "__main__":
-    config_path = os.getenv("PROXMOX_MCP_CONFIG")
-    if not config_path:
-        print("PROXMOX_MCP_CONFIG environment variable must be set")
-        sys.exit(1)
-    
-    try:
-        server = ProxmoxMCPServer(config_path)
-        server.start()
-    except KeyboardInterrupt:
-        print("\nShutting down gracefully...")
-        sys.exit(0)
-    except Exception as e:
-        print(f"Error: {e}")
-        sys.exit(1)
+    from . import main
+    main()

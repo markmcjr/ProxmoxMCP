@@ -5,9 +5,8 @@ Tests for the Proxmox MCP server.
 import os
 import json
 import pytest
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
-from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
 from proxmox_mcp.server import ProxmoxMCPServer
 
@@ -16,10 +15,9 @@ def mock_env_vars():
     """Fixture to set up test environment variables."""
     env_vars = {
         "PROXMOX_HOST": "test.proxmox.com",
-        "PROXMOX_USER": "test@pve",
-        "PROXMOX_TOKEN_NAME": "test_token",
-        "PROXMOX_TOKEN_VALUE": "test_value",
-        "LOG_LEVEL": "DEBUG"
+        "PROXMOX_TOKEN_ID": "test@pve!test_token",
+        "PROXMOX_TOKEN_SECRET": "test_value",
+        "PROXMOX_LOG_LEVEL": "DEBUG",
     }
     with patch.dict(os.environ, env_vars):
         yield env_vars
@@ -27,7 +25,8 @@ def mock_env_vars():
 @pytest.fixture
 def mock_proxmox():
     """Fixture to mock ProxmoxAPI."""
-    with patch("proxmox_mcp.server.ProxmoxAPI") as mock:
+    with patch("proxmox_mcp.core.proxmox.ProxmoxAPI") as mock:
+        mock.return_value.version.get.return_value = {"version": "8.0"}
         mock.return_value.nodes.get.return_value = [
             {"node": "node1", "status": "online"},
             {"node": "node2", "status": "online"}
@@ -47,8 +46,6 @@ def test_server_initialization(server, mock_proxmox):
     assert server.config.auth.token_value == "test_value"
     assert server.config.logging.level == "DEBUG"
 
-    mock_proxmox.assert_called_once()
-
 @pytest.mark.asyncio
 async def test_list_tools(server):
     """Test listing available tools."""
@@ -58,8 +55,9 @@ async def test_list_tools(server):
     tool_names = [tool.name for tool in tools]
     assert "get_nodes" in tool_names
     assert "get_vms" in tool_names
-    assert "get_containers" in tool_names
-    assert "execute_vm_command" in tool_names
+    assert "get_storage" in tool_names
+    assert "get_cluster_status" in tool_names
+    assert "execute_vm_command" not in tool_names  # Intentionally removed for security
 
 @pytest.mark.asyncio
 async def test_get_nodes(server, mock_proxmox):
@@ -110,21 +108,6 @@ async def test_get_vms(server, mock_proxmox):
     assert result[1]["name"] == "vm2"
 
 @pytest.mark.asyncio
-async def test_get_containers(server, mock_proxmox):
-    """Test get_containers tool."""
-    mock_proxmox.return_value.nodes.get.return_value = [{"node": "node1", "status": "online"}]
-    mock_proxmox.return_value.nodes.return_value.lxc.get.return_value = [
-        {"vmid": "200", "name": "container1", "status": "running"},
-        {"vmid": "201", "name": "container2", "status": "stopped"}
-    ]
-
-    response = await server.mcp.call_tool("get_containers", {})
-    result = json.loads(response[0].text)
-    assert len(result) > 0
-    assert result[0]["name"] == "container1"
-    assert result[1]["name"] == "container2"
-
-@pytest.mark.asyncio
 async def test_get_storage(server, mock_proxmox):
     """Test get_storage tool."""
     mock_proxmox.return_value.storage.get.return_value = [
@@ -152,73 +135,8 @@ async def test_get_cluster_status(server, mock_proxmox):
     assert result["nodes"] == 2
 
 @pytest.mark.asyncio
-async def test_execute_vm_command_success(server, mock_proxmox):
-    """Test successful VM command execution."""
-    # Mock VM status check
-    mock_proxmox.return_value.nodes.return_value.qemu.return_value.status.current.get.return_value = {
-        "status": "running"
-    }
-    # Mock command execution
-    mock_proxmox.return_value.nodes.return_value.qemu.return_value.agent.exec.post.return_value = {
-        "out": "command output",
-        "err": "",
-        "exitcode": 0
-    }
-
-    response = await server.mcp.call_tool("execute_vm_command", {
-        "node": "node1",
-        "vmid": "100",
-        "command": "ls -l"
-    })
-    result = json.loads(response[0].text)
-
-    assert result["success"] is True
-    assert result["output"] == "command output"
-    assert result["error"] == ""
-    assert result["exit_code"] == 0
-
-@pytest.mark.asyncio
-async def test_execute_vm_command_missing_parameters(server):
-    """Test VM command execution with missing parameters."""
-    with pytest.raises(ToolError):
-        await server.mcp.call_tool("execute_vm_command", {})
-
-@pytest.mark.asyncio
-async def test_execute_vm_command_vm_not_running(server, mock_proxmox):
-    """Test VM command execution when VM is not running."""
-    mock_proxmox.return_value.nodes.return_value.qemu.return_value.status.current.get.return_value = {
-        "status": "stopped"
-    }
-
-    with pytest.raises(ToolError, match="not running"):
-        await server.mcp.call_tool("execute_vm_command", {
-            "node": "node1",
-            "vmid": "100",
-            "command": "ls -l"
-        })
-
-@pytest.mark.asyncio
-async def test_execute_vm_command_with_error(server, mock_proxmox):
-    """Test VM command execution with command error."""
-    # Mock VM status check
-    mock_proxmox.return_value.nodes.return_value.qemu.return_value.status.current.get.return_value = {
-        "status": "running"
-    }
-    # Mock command execution with error
-    mock_proxmox.return_value.nodes.return_value.qemu.return_value.agent.exec.post.return_value = {
-        "out": "",
-        "err": "command not found",
-        "exitcode": 1
-    }
-
-    response = await server.mcp.call_tool("execute_vm_command", {
-        "node": "node1",
-        "vmid": "100",
-        "command": "invalid-command"
-    })
-    result = json.loads(response[0].text)
-
-    assert result["success"] is True  # API call succeeded
-    assert result["output"] == ""
-    assert result["error"] == "command not found"
-    assert result["exit_code"] == 1
+async def test_execute_vm_command_removed(server):
+    """Verify execute_vm_command is NOT available (security hardening)."""
+    tools = await server.mcp.list_tools()
+    tool_names = [tool.name for tool in tools]
+    assert "execute_vm_command" not in tool_names

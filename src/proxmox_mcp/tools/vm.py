@@ -77,7 +77,11 @@ class VMTools(ProxmoxTool):
             result = []
             for node in self.proxmox.nodes.get():
                 node_name = node["node"]
-                vms = self.proxmox.nodes(node_name).qemu.get()
+                try:
+                    vms = self.proxmox.nodes(node_name).qemu.get()
+                except Exception:
+                    # Skip unreachable nodes (PR #15 fix)
+                    continue
                 for vm in vms:
                     vmid = vm["vmid"]
                     # Get VM config for CPU cores

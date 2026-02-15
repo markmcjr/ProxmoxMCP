@@ -5,7 +5,7 @@ Tests for VM console operations.
 import pytest
 from unittest.mock import Mock, patch
 
-from proxmox_mcp.tools.vm_console import VMConsoleManager
+from proxmox_mcp.tools.console.manager import VMConsoleManager
 
 @pytest.fixture
 def mock_proxmox():

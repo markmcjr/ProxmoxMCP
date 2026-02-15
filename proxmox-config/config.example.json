@@ -2,7 +2,7 @@
     "proxmox": {
         "host": "your-proxmox-host-ip",
         "port": 8006,
-        "verify_ssl": false,
+        "verify_ssl": true,
         "service": "PVE"
     },
     "auth": {
